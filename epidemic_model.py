@@ -9,6 +9,9 @@ from scipy.optimize import fsolve
 from scipy.special import binom
 import matplotlib.pyplot as plt
 
+#Debug
+import pdb
+
 # Utils to Execute on IPython
 from IPython.display import display, clear_output
 
@@ -23,9 +26,18 @@ TYPES = ['S', 'I', 'R']
 class Simulation():
     '''
     Simulation du modèle basé sur les EDO
+    variables :
+    * T : end time of the simulation
+    * thresh : if in kwargs, the simulation ends after the number of infected is greater than thresh
     '''
     
     def __init__(self, beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim=0, **kwargs):
+        # Allow either for a threshold by number of infected or by time
+        self.time_stop = True
+        if 'thresh' in kwargs:
+            self.thresh = kwargs['thresh']
+            self.time_stop = False
+        # Initialisation des autres paramètres
         self.beta_f = beta_f
         self.gamma = gamma
         self.beta_m = beta_m
@@ -125,7 +137,6 @@ class Simulation():
         df = self.state_0
         # Initialisation
 
-        M = self.M
         XS = np.zeros(len(dict_types)+1)
         XI = np.zeros(len(dict_types)+1)
         XR = np.zeros(len(dict_types)+1)
@@ -165,17 +176,41 @@ class Simulation():
         else:
             # Initialise avec le dictionnaire des infectés
             XS, XI, XR, LIST_XS, LIST_XI, LIST_XR = self.initialize_and_infect(dict_types)
-        
-        for k in range(self.n):
-            XS,XI,XR = self.next_state(LIST_XS[-1],LIST_XI[-1],LIST_XR[-1], dict_types)
-            LIST_XS.append(XS)
-            LIST_XI.append(XI)
-            LIST_XR.append(XR)
 
-            # Affichage :
-            if k % 10 == 0:
-                clear_output(wait=True)
-                display(f'EDO Simulation in process : {100 * k / self.n} % completed')
+        if self.time_stop:
+            # Simulation en temps habituelle
+            for k in range(self.n):
+                XS,XI,XR = self.next_state(LIST_XS[-1],LIST_XI[-1],LIST_XR[-1], dict_types)
+                LIST_XS.append(XS)
+                LIST_XI.append(XI)
+                LIST_XR.append(XR)
+                # Affichage
+                if k % 10 == 0:
+                    clear_output(wait=True)
+                    display(f'EDO Simulation in progress : {100 * k / self.n} % completed')
+
+        else:
+            # Simulation avec arrêt si dépassement de la borne max
+            for k in range(self.n):
+                XS,XI,XR = self.next_state(LIST_XS[-1],LIST_XI[-1],LIST_XR[-1], dict_types)
+                LIST_XS.append(XS)
+                LIST_XI.append(XI)
+                LIST_XR.append(XR)
+                
+                # Affichage :
+                if k % 10 == 0:
+                    clear_output(wait=True)
+                    display(f'EDO Simulation in progress : {100 * k / self.n} % completed')
+
+                if np.sum(XI) > self.thresh:
+                    # On dépasse la limite
+                    self.time_thresh = k * self.T / self.n
+                    # Changement de variable qui évite les erreurs dans les calculs des infos utiles.
+                    self.T = self.time_thresh
+                    clear_output(wait=True)
+                    display(f'EDO Simulation finished : {np.sum(XI)} people have been infected at time {self.time_thresh}')
+                    break
+
 
         NB_S = [np.sum(xs) for xs in LIST_XS]
         NB_I = [np.sum(xi) for xi in LIST_XI]
@@ -204,9 +239,8 @@ class Simulation():
 
         if not(hasattr(self, 'df')):
             self.df = self.simulate()
-
         df = self.df
-        dt = self.dt
+
         # Initialisation des paramètres
         index_foyer = list(df.foyer.unique())
         max_index = df.step.max()
@@ -220,10 +254,10 @@ class Simulation():
         df_res = pd.DataFrame({
           'foyer' : [i for i in index_foyer],
           'nb_infectes_max' : [list_infectes_max[i][0] for i in range(nb_foyer)],
-          'temps_nb_infecte_max' : [list_infectes_max[i][1] * self.dt for i in range(nb_foyer)],
+          'temps_nb_infecte_max' : [list_infectes_max[i][1] for i in range(nb_foyer)],
           'pente_infectes_max' : [list_greatest_slopes[i][0] for i in range(nb_foyer)],
-          'temps_pente_max' : [list_greatest_slopes[i][1] * self.dt for i in range(nb_foyer)],
-          'nb_total_infectes' : [self.get_total_infected_people(foyer=i, max_index=max_index) for i in index_foyer],
+          'temps_pente_max' : [list_greatest_slopes[i][1] for i in range(nb_foyer)],
+          'nb_total_infectes' : [self.get_total_infected_people(foyer=i) for i in index_foyer],
           'R_0': [list_R0[i] for i in range(nb_foyer)]
           }, index = index_foyer)
         
@@ -254,11 +288,11 @@ class Simulation():
     def get_infecte_max(self, foyer):
         df= self.df
         res = df[(df.variable == 'infectés') & (df.foyer == foyer)]
-        return res.value.max(), res.value.argmax()
+        return res.value.max(), res[res.value == res.value.max()].temps.iloc[0]
 
-    def get_total_infected_people(self, foyer=1, max_index = 1000):
+    def get_total_infected_people(self, foyer=1):
         df = self.df
-        return df[(df.step == max_index) & (df.foyer == foyer) & (df.variable.isin(['infectés', 'remis']))].value.sum()
+        return df[(df.temps == df.temps.max()) & (df.foyer == foyer) & (df.variable.isin(['infectés', 'remis']))].value.sum()
 
     def get_greatest_slope(self, foyer=1, max_index=1000):
         df = self.df
@@ -267,13 +301,12 @@ class Simulation():
         for i in range(1, max_index):
             slopes.append(df.loc[df.step == i, 'value'].iloc[0] - df.loc[df.step == i-1, 'value'].iloc[0])
             
-        self.time_greatest_slope = np.argmax(slopes)
-        
-        return np.max(slopes), np.argmax(slopes)
+        self.step_greatest_slope = np.argmax(slopes)
+        self.time_greatest_slope = df[df.step == np.argmax(slopes)].temps.iloc[0]
+        return np.max(slopes), self.time_greatest_slope
     
     def get_r0(self, foyer=1):
         df = self.df
-        dt = self.dt
         t_max = self.time_greatest_slope * self.dt
                        
         if t_max < 5 * self.dt:
@@ -281,7 +314,7 @@ class Simulation():
             return np.nan
         
         # On ne veut que le comportement exponentiel, on ne garde donc que la partie avant le nombre maximal d'infectés.
-        data = df[(2 * self.dt <df['temps']) & (df['temps']< 0.85 * t_max) & (df['variable']=='infectés')]
+        data = df[(2 * self.dt <df['temps']) & (df['temps']< 0.9 * t_max) & (df['variable']=='infectés')]
         data.loc[:,('log_value')] = np.log(data['value'])
         R0 = linregress(data[data.foyer == foyer]['temps'], data[data.foyer == foyer]['log_value']).slope+1
         return R0
@@ -304,16 +337,27 @@ class Simulation():
                     indice+=1
         return dict_types
 
+    def get_temps_atteinte(self, valeur):
+        df2 = self.df[self.df.variable=='infectés'].copy()
+        try:
+            return df2[df2.value>=10].head(1).temps.iloc[0]
+        except IndexError as _:
+            raise(IndexError("Le niveau inséré n'est pas atteint par la simulation"))
 
+        
 class StochasticSimulation(Simulation) :
     '''
     Cette classe hérite de la classe Simulation défiie au dessus et
     implémente la modélisation stochastique en plus
     '''
     
-    def __init__(self, beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim=0):
-        super().__init__(beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim)
+    def __init__(self, beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim=0, **kwargs):
+        super().__init__(beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim, **kwargs)
         self.tab_time = [0]
+        # Variable that will check if the number of infected goes above the thresh
+        self.below_thresh = True
+        # Variable used to let the code be faster 
+        self._nb_infected = 0
 
     def recovery(self, state, m):
         '''
@@ -333,6 +377,7 @@ class StochasticSimulation(Simulation) :
         for i in range(len(TYPES)):
             n_state = self.change_state(n_state, f'{TYPES[i]}_{m[0]}_{m[1]-1}_{m[2]+1}', m[i] + change[i])
 
+        self._nb_infected -= 1
         return n_state
 
     def infection(self, state, m):
@@ -343,7 +388,6 @@ class StochasticSimulation(Simulation) :
             m (3uple)-- type of households infected 
         '''
         n_state = state.copy()
-
         # On retire tout le foyer de chaque aggrégat
         for i in range(len(TYPES)):
             n_state = self.change_state(n_state, f'{TYPES[i]}_{m[0]}_{m[1]}_{m[2]}', -m[i]) 
@@ -353,23 +397,53 @@ class StochasticSimulation(Simulation) :
         for i in range(len(TYPES)):
             n_state = self.change_state(n_state, f'{TYPES[i]}_{m[0]-1}_{m[1]+1}_{m[2]}',  m[i] + change[i])
         
+        self._nb_infected +=1
         return n_state
 
+    def one_turn(self, df_state, counter):
+        '''
+        One step in the system, this function also takes care of the output
+        '''
+
+        try:
+            df_state = self.next_state(df_state)
+        except TypeError:
+            # Il n'y a plus d'infectés, on fixe donc le nombre d'infectés et on retourne le df inchangé
+            self._nb_infected=0
+            self.l_state.append(df_state)
+            return df_state
+        else:
+            self.l_state.append(df_state)
+            # Affichage :
+            if counter % 10 == 0:
+                clear_output(wait=True)
+                display(f'Stochastic Simualation in progress : {100 * self.tab_time[-1] / self.T} % completed')
+            return df_state
+    
     def simulate(self):
         df_state =  self.initialize_and_infect()
         self.l_state = [df_state]
-        
         counter = 0
-        while self.tab_time[-1] < self.T:
-            
-            df_state = self.next_state(df_state)
-            self.l_state.append(df_state)
-
-            # Affichage :
-            if counter % 20 == 0:
-                clear_output(wait=True)
-                display(f'Stochastic Simualation in process : {100 * self.tab_time[-1] / self.T} % completed')
-
+        
+        if not(self.time_stop):
+            # Cas avec limite 
+            while self.tab_time[-1] < self.T and self._nb_infected>0:
+                df_state = self.one_turn(df_state, counter)
+                counter += 1
+                if self._nb_infected >= self.thresh:
+                    #self.thresh is not called if time stop is True
+                    self.time_thresh = self.tab_time[-1]
+                    # Again, T is being changed to facilitate other calculations.
+                    self.T = self.time_thresh
+                    clear_output(wait=True)
+                    display(f'Stochastic Simualation finished : {self.thresh} people have been infected at time {self.time_thresh}.')
+                    break
+                counter +=1
+        else:
+            #Cas sans limite
+            while self.tab_time[-1] < self.T and self._nb_infected>0:
+                df_state = self.one_turn(df_state, counter)
+                counter += 1
         
         NB_I = [self.get_nb_etat(state, 'I') for state in self.l_state]
         NB_R = [self.get_nb_etat(state, 'R') for state in self.l_state]
@@ -380,6 +454,12 @@ class StochasticSimulation(Simulation) :
         self.NB_S = NB_S
         self.NB_I = NB_I
         self.NB_R = NB_R
+        
+        if len(NB_I)>len(self.tab_time):
+            # La simualtion n'a plus d'infectés, on ne prend pas le dernier élément qui s'est répété
+            self.NB_S=self.NB_S[:-1]
+            self.NB_I=self.NB_I[:-1]
+            self.NB_R=self.NB_R[:-1]
 
         df = pd.DataFrame({'susceptibles' : NB_S,
                             'infectés': NB_I,
@@ -403,8 +483,12 @@ class StochasticSimulation(Simulation) :
         '''
         nombre_s = state.loc[state.etat == 'S', 'nombre'].sum()
         nombre_i = state.loc[state.etat == 'I', 'nombre'].sum()
-        taux_champs_moyen = self.gamma * nombre_s * nombre_i / np.sum(self.liste_foyer)
-
+        if nombre_i == 0: 
+            # Il n'y a plus d'infectés, on dit qu'il faut s'arrêter
+            return None
+        
+        taux_champs_moyen = self.beta_m * nombre_s * nombre_i / np.sum(self.liste_foyer)
+ 
         somme = taux_champs_moyen # Sert à calculer la somme de tous les taux
 
         law_on_m = pd.DataFrame({'transition_type': 'champs_moyen',
@@ -415,10 +499,10 @@ class StochasticSimulation(Simulation) :
                         columns=['transition_type', 'ms', 'mi', 'mr', 'rate'],
                         index=[0])
 
-        for index, row in state[state.etat == 'I'].iterrows():
+        for _, row in state[(state.etat == 'I') & state.nombre>0].iterrows():
             ms, mi, mr, pop_foyer = row.ms, row.mi, row.mr, row.nombre
 
-            lambda_1 = (self.beta_f * pop_foyer * ms) # Infection
+            lambda_1 = (self.beta_f * pop_foyer * ms) # Infectionx  
             lambda_2 = (self.gamma * pop_foyer) # Recovery
 
             new_line_1 = pd.DataFrame({'transition_type': 'infection',
@@ -487,9 +571,12 @@ class StochasticSimulation(Simulation) :
             state = pd.concat([state, new_line])
             # Faire attention, peut être négative
             
-            # On supprime l'entrée parce qu'elle est vide
-        index_to_drop = state[state.nombre<0].index
-        state = state.drop(index=index_to_drop)
+        # On supprime l'entrée parce qu'elle est vide
+        index_to_drop = set(state[state.nombre<0].index)
+        m_below_zero = {l[2:] for l in index_to_drop}
+        # On drop tous les types du foyer vide
+        m_to_drop = {f'{_type}_{m}' for m in m_below_zero for _type in ['S', 'I', 'R']} 
+        state = state.drop(index=m_to_drop, errors='ignore')
 
         return state
 
@@ -511,9 +598,10 @@ class StochasticSimulation(Simulation) :
 
         # Modification of the state according to the infections given
         for m in self.dic_infection.keys():
+            m_before = (m[0]+1, m[1]-1, m[2]) # Dans le dictionnaire m est le résultat voulu, ici on veut le foyer à infecter
             nb_infection = self.dic_infection[m]
             for _ in range(nb_infection):
-                state_0 = self.infection(state_0, m)
+                state_0 = self.infection(state_0, m_before)
         
         return state_0
 
@@ -522,19 +610,25 @@ class StochasticSimulation(Simulation) :
         Simulate an evolution of one step of the whole system
         '''
         time = self.tab_time[-1]
-        n_time, m = self.draw_time(state)
-        change_type = m[-1] # Type de changement, on pourra simplifier ça plus tard
 
-        m = m[0:3].copy()
-        if change_type == 'recovery':
-            n_state = self.recovery(state, m)
-        if change_type == 'infection':
-            n_state = self.infection(state, m)
-        
-        # MaJ de la table temporelle
-        self.tab_time.append(time + n_time)
 
-        return n_state
+        try:
+            n_time, m = self.draw_time(state)
+        except TypeError:
+            # Cela veut dire qu'il n'y a plus d'infectés:
+            raise TypeError("Il n'y a plus d'infectés")
+        else:
+            change_type = m[-1] # Type de changement, on pourra simplifier ça plus tard
+            m = m[0:3].copy()
+            if change_type == 'recovery':
+                n_state = self.recovery(state, m)
+            if change_type == 'infection':
+                n_state = self.infection(state, m)
+            
+            # MaJ de la table temporelle
+            self.tab_time.append(time + n_time)
+
+            return n_state
     
     def to_dic_infected(self, tau) :
         '''
@@ -547,8 +641,8 @@ class StochasticSimulation(Simulation) :
         n_df = df[df.temps >= tau].sort_values(by='temps')
         
         try:
-            step, time = n_df.step.iloc[0], n_df.temps.iloc[0]
-        except (IndexError) as e:
+            step = n_df.step.iloc[0]
+        except (IndexError):
             raise IndexError(f'Tau is greater than the last time of the Simulation ({df.temps.max()})')
             
         # On récupère le dataframe du temps voulu
@@ -576,30 +670,45 @@ class StochasticSimulation(Simulation) :
 class DualSimulation(Simulation):
     '''
     Associe les deux types de simulation (EDO et stochastique)
+    Two types of threshold can be added : 
+        * 'thresh_sto' : the stochastic simulation ends when this threshold is exceeded.
+        * 'thresh' : the whole simulation stops if the level is exceeded.
     '''
 
-    def __init__(self, beta_f, beta_m, gamma, liste_foyer, T_sto, T, n, dic_infection, id_sim=0):
-        super().__init__(beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim)
+    def __init__(self, beta_f, beta_m, gamma, liste_foyer, T_sto, T, n, dic_infection, id_sim=0, **kwargs):
+        super().__init__(beta_f, beta_m, gamma, liste_foyer, T, n, dic_infection, id_sim, **kwargs)
         self.T_sto = T_sto
-        
         # Simulation de la partie stochastique
-        self._stochastic_sim = StochasticSimulation(beta_f, beta_m, gamma, liste_foyer, T_sto, n, dic_infection, id_sim)
+        thresh_sto_sim = True # Booleen permettant de savoir quelle type de limite on impose
+        if 'thresh_sto' in kwargs:
+            # Simulation avec arrêt par limite
+            self.thresh_sto = kwargs['thresh_sto']
+            self._stochastic_sim = StochasticSimulation(beta_f, beta_m, gamma, liste_foyer, T_sto, n, dic_infection, id_sim, thresh=self.thresh_sto)
+        else:
+            # Simulation classique
+            self._stochastic_sim = StochasticSimulation(beta_f, beta_m, gamma, liste_foyer, T_sto, n, dic_infection, id_sim, **kwargs)
+            thresh_sto_sim = False
+        
         self._stochastic_sim.simulate()
         self.tab_time_sto = self._stochastic_sim.tab_time
         self.df_sto = self._stochastic_sim.get_df()
-        self.state_0 = self._stochastic_sim.give_last_state()
-        last_temps, last_step = self.df_sto.temps.max(), self.df_sto.step.max() # On rapelle que T_sto < last_temps
+        if not(thresh_sto_sim) and self.df_sto.temps.max() < T_sto :
+            # On a dépassé le threshold dans le cas global
+            self.df = self.df_sto
+        else:
+            self.state_0 = self._stochastic_sim.give_last_state()
+            last_temps, last_step = self.df_sto.temps.max(), self.df_sto.step.max() # On rapelle que T_sto < last_temps
 
-        # Simulation de la partie EDO
-        _edo_sim = Simulation(beta_f, beta_m, gamma, liste_foyer, T - last_temps, n, dic_infection, id_sim, state_0=self.state_0)
-        _edo_sim.simulate(from_given_state=True)
-        self._edo_sim = _edo_sim
-        df_edo = _edo_sim.get_df()
-        df_edo.step = df_edo.step + last_step
-        df_edo = df_edo[df_edo.step > last_step] # On évite la redondance de l'état de jointure
-        df_edo.temps = df_edo.temps + last_temps
-        self.df_edo = df_edo
-        self.tab_time_edo = [ T_sto + i * (T - T_sto) / n for i in range(n)]
+            # Simulation de la partie EDO
+            _edo_sim = Simulation(beta_f, beta_m, gamma, liste_foyer, T - last_temps, n, dic_infection, id_sim, state_0=self.state_0, **kwargs)
+            _edo_sim.simulate(from_given_state=True)
+            self._edo_sim = _edo_sim
+            df_edo = _edo_sim.get_df()
+            df_edo.step = df_edo.step + last_step
+            df_edo = df_edo[df_edo.step > last_step] # On évite la redondance de l'état de jointure
+            df_edo.temps = df_edo.temps + last_temps
+            self.df_edo = df_edo
+            self.tab_time_edo = [ T_sto + i * (T - T_sto) / n for i in range(n)]
 
         # Mise en commun
         self.df = pd.concat([self.df_sto, self.df_edo], axis=0)
