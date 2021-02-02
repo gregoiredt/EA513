@@ -277,7 +277,10 @@ class Simulation():
             'gamma' : self.gamma,
             'beta_m' : self.beta_m,
             'foyer' : str(self.liste_foyer),
-            'CI' : str(self.dic_infection)}, index = [self.id_sim])
+            'CI' : str(self.dic_infection),
+            'mean' : self.get_mean_foyer(),
+            'variance' : self.get_variance_foyer()},
+            index = [self.id_sim])
         
         df_VI = self.show_interest_variables()
         
@@ -344,7 +347,21 @@ class Simulation():
         except IndexError as _:
             raise(IndexError("Le niveau inséré n'est pas atteint par la simulation"))
 
-        
+    def get_mean_foyer(self):
+        '''
+        Renvoie la moyenne de nombre d'habitant pour la liste de foyer donnée
+        '''
+        return np.sum([(i+1)*self.liste_foyer[i] for i in range(len(self.liste_foyer))]) / np.sum(self.liste_foyer)
+
+    def get_variance_foyer(self):
+        '''
+        Renvoie la variance du nombre d'habitant par foyer pour la liste donnée
+        '''
+        first_term = np.sum([(i+1)**2 *self.liste_foyer[i] for i in range(len(self.liste_foyer))]) / np.sum(self.liste_foyer) 
+        second_term = (self.get_mean_foyer())**2
+        return first_term - second_term # Moyenne du carré - carré de la moyenne   
+
+            
 class StochasticSimulation(Simulation) :
     '''
     Cette classe hérite de la classe Simulation défiie au dessus et
