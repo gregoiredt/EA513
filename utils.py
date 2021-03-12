@@ -48,3 +48,33 @@ def expand_10_law(law, factor):
             n_law[i*factor + k] = law[i]
     
     return n_law / np.sum(n_law)
+
+def k_f(k, beta_f, gamma, determinist = True, n_estim=100):
+    if determinist:
+        pass
+
+    else:
+        list_kf = []
+        for _ in range(n_estim):
+            list_kf.append(simulation_SIR(k, beta_f, gamma)) # Nombre d'infecté dans le foyer
+        return np.mean(list_kf)
+
+def simulation_SIR(k, beta_f, gamma):
+    # Initialisation des paramètres :
+    S, I, R = k-1, 1, 0
+    
+    while S>0:
+
+        # On pioche les temps
+        time_rec = np.random.exponential(1/ (gamma * I))
+        
+        time_inf = np.random.exponential(1/(beta_f * I * S / (S+I+R)))
+        
+        #On avance d'une étape
+        if time_inf < time_rec: 
+            S, I, R = S-1, I+1, R
+
+        else :
+            S, I, R = S, I-1, R+1
+        
+    return I + R

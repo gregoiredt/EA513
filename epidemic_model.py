@@ -49,6 +49,7 @@ class Simulation():
         self.dic_infection = dic_infection
         self.M = len(liste_foyer) # Nombre maximal de résident dans un foyer
         self.state_0 = kwargs['state_0'] if 'state_0' in kwargs else None  
+        self.foyer_calculations = kwargs['foyer_calculation'] if 'foyer_calculation' in kwargs else None
    
     def get_df(self):
         return self.df
@@ -216,6 +217,8 @@ class Simulation():
         NB_I = [np.sum(xi) for xi in LIST_XI]
         NB_R = [np.sum(xr) for xr in LIST_XR]
         
+        self.list_xs, self.list_xi, self.list_xr = np.array(LIST_XS), np.array(LIST_XI), np.array(LIST_XR)
+
         self.NB_S = NB_S
         self.NB_I = NB_I
         self.NB_R = NB_R
@@ -235,6 +238,32 @@ class Simulation():
 
         return df 
     
+
+    def get_df_foyer(self):
+        dict_types = self.initialize_dict()
+        n_dic = dict()
+        
+        for key in dict_types:
+            label = f'{key[0]}_{key[1]}_{key[2]}'
+            n_dic[label] = self.list_xi[:, dict_types[key]]
+
+            pop_tot_foyer = key[0] + key[1] + key[2]
+            
+            pop_tot_label = f'foyer_taille_{pop_tot_foyer}'
+            
+            if pop_tot_label not in n_dic.keys():
+                n_dic[f'foyer_taille_{pop_tot_foyer}'] = self.list_xi[:, dict_types[key]] # Ce sont des array on peut les sommer
+            else :  
+                n_dic[f'foyer_taille_{pop_tot_foyer}'] += self.list_xi[:, dict_types[key]]
+        
+        n_dic['foyer'] = [self.id_sim]*len(self.NB_S)
+        n_dic['temps'] = np.array(self.df[self.df.variable=='infectés'].temps)
+        n_dic['step'] = [k for k in range(len(self.NB_S))]
+        df_foyer = pd.DataFrame(n_dic, index=[k for k in range(len(self.list_xi))])
+
+        return df_foyer
+
+
     def show_interest_variables(self):
 
         if not(hasattr(self, 'df')):
@@ -248,7 +277,7 @@ class Simulation():
         # Calcul des variables d'intérêt
         list_greatest_slopes = [self.get_greatest_slope(foyer=i, max_index=max_index) for i in index_foyer]
         list_infectes_max = [self.get_infecte_max(foyer=i) for i in index_foyer]
-        list_R0 = [self.get_r0(foyer=i) for i in index_foyer]
+        list_R0 = [self.get_r0() for i in index_foyer]
         nb_foyer = len(index_foyer)
 
         df_res = pd.DataFrame({
@@ -270,7 +299,6 @@ class Simulation():
 
         if not(hasattr(self, 'df')):
             self.df = self.simulate()
-        
         df_complete = pd.DataFrame({
             'id' : self.id_sim,
             'beta_f' : self.beta_f,
@@ -287,6 +315,7 @@ class Simulation():
         self.all_infos = pd.concat([df_complete, df_VI], axis=1)
         
         return self.all_infos
+
 
     def get_infecte_max(self, foyer):
         df= self.df
@@ -308,18 +337,17 @@ class Simulation():
         self.time_greatest_slope = df[df.step == np.argmax(slopes)].temps.iloc[0]
         return np.max(slopes), self.time_greatest_slope
     
-    def get_r0(self, foyer=1):
+    def get_r0(self):
         df = self.df
-        t_max = self.time_greatest_slope * self.dt
-                       
+        t_max = self.time_greatest_slope    
         if t_max < 5 * self.dt:
             # Il n'y a presque pas d'explosion, l'épidémie s'éteint dès le début...
             return np.nan
         
         # On ne veut que le comportement exponentiel, on ne garde donc que la partie avant le nombre maximal d'infectés.
-        data = df[(2 * self.dt <df['temps']) & (df['temps']< 0.9 * t_max) & (df['variable']=='infectés')]
+        data = df[(df.temps > 0) & (df.temps < 0.8 * t_max) & (df['variable']=='infectés')]
         data.loc[:,('log_value')] = np.log(data['value'])
-        R0 = linregress(data[data.foyer == foyer]['temps'], data[data.foyer == foyer]['log_value']).slope+1
+        R0 = linregress(data[data.foyer == self.id_sim]['temps'], data[data.foyer == self.id_sim]['log_value']).slope + 1
         return R0
 
     def plot(self, xlim):
@@ -492,6 +520,32 @@ class StochasticSimulation(Simulation) :
         self.df = df
 
         return df 
+
+    def get_df_foyer(self):
+        dic_types = self.initialize_dict()
+        n_dic = dict()
+        
+        for key in dic_types.keys():
+            ms, mi, mr = key
+            label = f'{ms}_{mi}_{mr}'
+
+            value_array = np.array([(state[(state.etat=='I') & (state.ms==ms) & (state.mi==mi) & (state.mr==mr)].nombre.iloc[0]) \
+                if (len(state[(state.etat=='I') & (state.ms==ms) & (state.mi==mi) & (state.mr==mr)].nombre)>0) else 0 for state in self.l_state])
+            n_dic[label] = value_array
+            pop_tot_foyer = ms + mi + mr
+            pop_tot_label = f'foyer_taille_{pop_tot_foyer}'
+            
+            if pop_tot_label not in n_dic.keys():
+                n_dic[f'foyer_taille_{pop_tot_foyer}'] = value_array
+            else : 
+                n_dic[f'foyer_taille_{pop_tot_foyer}'] += value_array
+
+        n_dic['foyer'] = [self.id_sim]*len(self.l_state)
+        n_dic['temps'] = self.tab_time
+        n_dic['step'] = [k for k in range(len(self.l_state))]
+        df_foyer = pd.DataFrame(n_dic, index=[k for k in range(len(self.l_state))])
+
+        return df_foyer
 
     def draw_time(self, state):
         '''
@@ -715,6 +769,7 @@ class DualSimulation(Simulation):
         else:
             self.state_0 = self._stochastic_sim.give_last_state()
             last_temps, last_step = self.df_sto.temps.max(), self.df_sto.step.max() # On rapelle que T_sto < last_temps
+            self.last_temps_sto, self.last_step_sto = last_temps, last_step
 
             # Simulation de la partie EDO
             _edo_sim = Simulation(beta_f, beta_m, gamma, liste_foyer, T - last_temps, n, dic_infection, id_sim, state_0=self.state_0, **kwargs)
@@ -730,6 +785,17 @@ class DualSimulation(Simulation):
         # Mise en commun
         self.df = pd.concat([self.df_sto, self.df_edo], axis=0)
     
+    def get_df_foyer(self):
+       
+        df_foyer_sto = self._stochastic_sim.get_df_foyer()
+        df_foyer_edo = self._edo_sim.get_df_foyer()
+        df_foyer_edo.step = df_foyer_edo.step + self.last_step_sto
+        df_foyer_edo = df_foyer_edo[df_foyer_edo.step > self.last_step_sto]
+        df_foyer_edo.temps += self.last_temps_sto
+        self.df_foyer = pd.concat([df_foyer_sto, df_foyer_edo], axis=0)
+        
+        return self.df_foyer
+      
     def simulate(self):
         raise SystemError('You should not call such a function on this particular class')
 
@@ -744,7 +810,7 @@ class DualSimulation(Simulation):
         plt.xlim((0, xlim))
         plt.show()
 
-         
+
 
     
 
